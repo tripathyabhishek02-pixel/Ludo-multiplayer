@@ -17,8 +17,8 @@ const START = { green: 1, yellow: 14, blue: 27, red: 40 };
 // Safe squares match the eight star squares on the classic board.
 const SAFE = new Set([1, 9, 14, 22, 27, 35, 40, 48]);
 const PATH = 52;
-const HOME = 57;
-const FINISH = 58;
+const HOME = 56;
+const FINISH = 57;
 const MAX_TOKENS = 4;
 
 function code() {

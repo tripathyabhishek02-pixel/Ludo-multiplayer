@@ -9,7 +9,7 @@ const COLORS=['red','green','yellow','blue'];
 // Start squares are arranged like the reference board:
 // green = left, yellow = top, blue = right, red = bottom.
 const START={green:1,yellow:14,blue:27,red:40};
-const FINISH=58;
+const FINISH=57;
 
 const TRACK=[
  [6,0],[6,1],[6,2],[6,3],[6,4],[6,5],[5,6],[4,6],[3,6],[2,6],[1,6],[0,6],[0,7],[0,8],
