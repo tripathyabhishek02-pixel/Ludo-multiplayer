@@ -37,7 +37,7 @@ function roomView(r) {
 }
 function broadcast(r) { io.to(r.code).emit('state', roomView(r)); }
 function orderedColors(r) { return COLORS.slice(0, r.maxPlayers); }
-function makePlayer(name, color, id) { return { id, name:name.slice(0,20), color, tokens:[-1,-1,-1,-1], connected:true, finished:0 }; }
+function makePlayer(name, color, id, playerKey) { return { id, playerKey, name:name.slice(0,20), color, tokens:[-1,-1,-1,-1], connected:true, finished:0 }; }
 function nextConnectedIndex(r, from) {
   for (let i=1;i<=r.players.length;i++) {
     const idx=(from+i)%r.players.length;
@@ -84,30 +84,65 @@ function getCurrent(r,socketId) { return r.players[r.turn]?.id===socketId ? r.pl
 function emitError(socket,msg){ socket.emit('gameError',{message:msg}); }
 
 io.on('connection', socket => {
-  socket.on('createRoom', ({maxPlayers=4,name='Player'} = {}, ack) => {
+  socket.on('createRoom', ({maxPlayers=4,name='Player',playerKey=''} = {}, ack) => {
     maxPlayers=Number(maxPlayers);
     if (![2,3,4].includes(maxPlayers)) { if (ack) ack({ok:false,message:'Choose 2, 3 or 4 players.'}); return emitError(socket,'Choose 2, 3 or 4 players.'); }
     const r={code:code(),maxPlayers,status:'lobby',players:[],turn:0,dice:null,lastRoll:null,winner:null,lastAction:'Room created.'};
     const color=orderedColors(r)[0];
-    r.players.push(makePlayer(name||'Player',color,socket.id));
+    r.players.push(makePlayer(name||'Player',color,socket.id,String(playerKey||'')));
     rooms.set(r.code,r); socket.join(r.code); socket.data.room=r.code;
     socket.emit('roomCreated',{code:r.code});
     if (ack) ack({ok:true, code:r.code});
     broadcast(r);
   });
 
-  socket.on('joinRoom', ({code:raw,name='Player'} = {}, ack) => {
+  socket.on('joinRoom', ({code:raw,name='Player',playerKey=''} = {}, ack) => {
     const normalized = String(raw || '').replace(/\s+/g,'').toUpperCase();
     const r=rooms.get(normalized);
     if (!r) { if (ack) ack({ok:false,message:'Room not found. Check the 6-character code.'}); return emitError(socket,'Room not found. Check the 6-character code.'); }
-    if (r.status!=='lobby') { if (ack) ack({ok:false,message:'Game has already started.'}); return emitError(socket,'Game has already started.'); }
+    // If this browser already owns a slot in the room, reclaim it instead of
+    // adding a duplicate player. This also works after the game has started.
+    const existing = playerKey ? r.players.find(p => p.playerKey === String(playerKey)) : null;
+    if (existing) {
+      existing.id = socket.id;
+      existing.connected = true;
+      socket.join(r.code); socket.data.room = r.code;
+      if (r.cleanupTimer) { clearTimeout(r.cleanupTimer); r.cleanupTimer = null; }
+      r.lastAction = `${existing.name} reconnected.`;
+      socket.emit('roomJoined',{code:r.code});
+      if (ack) ack({ok:true, code:r.code, reconnected:true});
+      broadcast(r);
+      return;
+    }
+    if (r.status!=='lobby') { if (ack) ack({ok:false,message:'Game has already started. Rejoin with the same browser that was playing.'}); return emitError(socket,'Game has already started.'); }
     if (r.players.length>=r.maxPlayers) { if (ack) ack({ok:false,message:'Room is full.'}); return emitError(socket,'Room is full.'); }
     const color=orderedColors(r)[r.players.length];
-    r.players.push(makePlayer(name||'Player',color,socket.id));
+    r.players.push(makePlayer(name||'Player',color,socket.id,String(playerKey||'')));
     socket.join(r.code); socket.data.room=r.code;
     r.lastAction=`${name||'Player'} joined room ${r.code}.`;
     socket.emit('roomJoined',{code:r.code});
     if (ack) ack({ok:true, code:r.code});
+    broadcast(r);
+  });
+
+  socket.on('rejoinRoom', ({code:raw,playerKey} = {}, ack) => {
+    const normalized = String(raw || '').replace(/\s+/g,'').toUpperCase();
+    const r = rooms.get(normalized);
+    if (!r || !playerKey) {
+      if (ack) ack({ok:false,message:'Saved game could not be found. Join with the room code again.'});
+      return;
+    }
+    const p = r.players.find(x => x.playerKey === String(playerKey));
+    if (!p) {
+      if (ack) ack({ok:false,message:'This browser is not linked to a player in that room. Join with the room code.'});
+      return;
+    }
+    p.id = socket.id;
+    p.connected = true;
+    socket.join(r.code); socket.data.room = r.code;
+    if (r.cleanupTimer) { clearTimeout(r.cleanupTimer); r.cleanupTimer = null; }
+    r.lastAction = `${p.name} reconnected.`;
+    if (ack) ack({ok:true,code:r.code});
     broadcast(r);
   });
 
@@ -151,9 +186,16 @@ function leave(socket, silent=false) {
   const r=rooms.get(socket.data.room); if (!r) return;
   const p=r.players.find(x=>x.id===socket.id); if (p) p.connected=false;
   if (!silent) socket.leave(r.code);
-  if (r.players.every(p=>!p.connected)) { rooms.delete(r.code); return; }
+  if (r.players.every(p=>!p.connected)) {
+    // Keep disconnected rooms available for 30 minutes so every player can
+    // recover after a network outage or page refresh.
+    if (!r.cleanupTimer) r.cleanupTimer = setTimeout(() => {
+      if (rooms.get(r.code) === r && r.players.every(player => !player.connected)) rooms.delete(r.code);
+    }, 30 * 60 * 1000);
+    return;
+  }
   if (r.status==='playing' && r.players[r.turn]?.id===socket.id) r.turn=nextConnectedIndex(r,r.turn);
-  r.lastAction=`${p?.name||'A player'} left.`; broadcast(r);
+  r.lastAction=`${p?.name||'A player'} disconnected.`; broadcast(r);
 }
 
 server.listen(PORT,()=>console.log(`Ludo server listening on http://localhost:${PORT}`));

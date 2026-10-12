@@ -5,6 +5,9 @@ import './styles.css';
 
 const API=import.meta.env.VITE_SERVER_URL || `${location.protocol}//${location.hostname}:3001`;
 const socket=io(API,{autoConnect:true,transports:['websocket','polling']});
+const PLAYER_KEY_STORAGE='ludoPlayerKey';
+const ROOM_CODE_STORAGE='ludoRoomCode';
+function getPlayerKey(){let key=localStorage.getItem(PLAYER_KEY_STORAGE);if(!key){key=crypto.randomUUID();localStorage.setItem(PLAYER_KEY_STORAGE,key)}return key;}
 const COLORS=['red','green','yellow','blue'];
 // Start squares are arranged like the reference board:
 // green = left, yellow = top, blue = right, red = bottom.
@@ -44,16 +47,27 @@ function App(){
  const params=new URLSearchParams(location.search); const initialRoom=params.get('room')||'';
  const [room,setRoom]=useState(null),[mode,setMode]=useState(initialRoom?'join':'home'),[name,setName]=useState(''),[maxPlayers,setMaxPlayers]=useState(4),[roomCode,setRoomCode]=useState(initialRoom.toUpperCase()),[error,setError]=useState('');
  const [copied,setCopied]=useState(false),[connected,setConnected]=useState(socket.connected);
+ const tryRejoin=()=>{
+   const savedCode=localStorage.getItem(ROOM_CODE_STORAGE);
+   const playerKey=localStorage.getItem(PLAYER_KEY_STORAGE);
+   if(!savedCode||!playerKey) return;
+   // A room invite opened from another room should remain a normal join flow.
+   if(initialRoom && initialRoom.toUpperCase()!==savedCode.toUpperCase()) return;
+   socket.emit('rejoinRoom',{code:savedCode,playerKey},res=>{
+     if(res?.ok){setRoomCode(res.code);history.replaceState({},'',`?room=${res.code}`);setMode('lobby');setError('');}
+   });
+ };
  useEffect(()=>{
    const onState=r=>setRoom(r);
    const onError=e=>setError(e.message);
-   const onConnect=()=>{setConnected(true);setError('')};
+   const onConnect=()=>{setConnected(true);setError('');tryRejoin()};
    const onDisconnect=()=>setConnected(false);
    socket.on('state',onState);
    socket.on('gameError',onError);
    socket.on('connect',onConnect);
    socket.on('disconnect',onDisconnect);
-   socket.on('roomCreated',({code})=>{setRoomCode(code);history.replaceState({},'',`?room=${code}`);setMode('lobby')});
+   socket.on('roomCreated',({code})=>{setRoomCode(code);localStorage.setItem(ROOM_CODE_STORAGE,code);history.replaceState({},'',`?room=${code}`);setMode('lobby')});
+   if(socket.connected) tryRejoin();
    return()=>{socket.off('state',onState);socket.off('gameError',onError);socket.off('connect',onConnect);socket.off('disconnect',onDisconnect);socket.off('roomCreated');socket.off('roomJoined')};
  },[]);
  useEffect(()=>{if(initialRoom)setMode('join')},[initialRoom]);
@@ -61,9 +75,10 @@ function App(){
  const create=()=>{
    setError('');
    if(!connected){setError('Not connected to the game server.');return;}
-   socket.emit('createRoom',{maxPlayers,name:name.trim()||'Player'},res=>{
+   socket.emit('createRoom',{maxPlayers,name:name.trim()||'Player',playerKey:getPlayerKey()},res=>{
      if(!res?.ok){setError(res?.message||'Could not create room.');return;}
      setRoomCode(res.code);
+     localStorage.setItem(ROOM_CODE_STORAGE,res.code);
      history.replaceState({},'',`?room=${res.code}`);
      setMode('lobby');
    });
@@ -73,9 +88,10 @@ function App(){
    const normalized=roomCode.replace(/\s+/g,'').toUpperCase();
    if(normalized.length!==6){setError('Enter the 6-character room code.');return;}
    if(!connected){setError('Not connected to the game server.');return;}
-   socket.emit('joinRoom',{code:normalized,name:name.trim()||'Player'},res=>{
+   socket.emit('joinRoom',{code:normalized,name:name.trim()||'Player',playerKey:getPlayerKey()},res=>{
      if(!res?.ok){setError(res?.message||'Could not join room.');return;}
      setRoomCode(res.code);
+     localStorage.setItem(ROOM_CODE_STORAGE,res.code);
      history.replaceState({},'',`?room=${res.code}`);
      setMode('lobby');
    });
